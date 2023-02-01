@@ -1,5 +1,5 @@
 #include <fmt/core.h>
-#include "../include/fixer.h"
+#include "../include/worker.h"
 
 void printTitle() {
     fmt::print("{:^{}}\n", "   ______ _  __       ______ _                  \n"
@@ -13,10 +13,10 @@ void printTitle() {
 int main() {
 
     printTitle();
-    FileFixer::Fixer fixer;
+    FileFixer::Worker fixer;
     fixer.ValidateUserInput();
     fixer.ProcessFiles();
-    fixer.PrintContainer();
+    fixer.PrintContainerCount();
 
     return 0;
 }

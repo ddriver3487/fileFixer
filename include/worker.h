@@ -14,13 +14,13 @@
 #include <set>
 
 namespace FileFixer {
-    class Fixer{
+    class Worker{
     public:
-        Fixer() = default;
+        Worker() = default;
 
         void ValidateUserInput();
         void ProcessFiles();
-        void PrintContainer();
+        void PrintContainerCount();
 
     private:
 
