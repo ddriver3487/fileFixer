@@ -13,10 +13,14 @@ void printTitle() {
 int main() {
 
     printTitle();
-    FileFixer::Worker fixer;
-    fixer.ValidateUserInput();
-    fixer.ProcessFiles();
-    fixer.PrintContainerCount();
+    FileFixer::Ring ring(4096);
+
+    FileFixer::Worker worker(ring.Get());
+    worker.InputPathHandler();
+    worker.ProcessFiles();
+    worker.PrintContainerCount();
+
+
 
     return 0;
 }

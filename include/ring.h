@@ -5,12 +5,64 @@
 #pragma once
 
 #include <cstdint>
+
 #include <liburing.h>
 #include <sys/utsname.h>
+#include <sys/uio.h> //iovec
 #include <vector>
 #include <fmt/core.h>
+#include <optional>
 
 namespace FileFixer {
+    enum class ioType {
+        read,
+        write,
+        none
+    };
+
+    struct ioData {
+        int fd { };
+        ioType type { ioType::none };
+        size_t startingOffset   { };
+        size_t currentOffset    { };
+        size_t firstLength      { };
+        iovec  iov              { };
+    };
+
+    class Completion {
+    public:
+        Completion() : ring(nullptr), data(nullptr), cqe(nullptr) { };
+        Completion(io_uring* ring, io_uring_cqe* cqe) : ring(ring), cqe(cqe) { };
+
+        [[nodiscard]] constexpr bool Safe() const { return cqe != nullptr; }
+
+        [[nodiscard]] constexpr bool Type() const { return  data->type == ioType::read; }
+
+        void Consumed() {
+            io_uring_cqe_seen(ring, cqe);
+            cqe = nullptr;
+        }
+
+        // Return an IO completion, if one is readily available. Returns with a cqe_ptr filled in on success.
+        std::optional<Completion> Get() {
+            Completion completion;
+            int returnCode = io_uring_peek_cqe(ring, &completion.cqe);
+
+            if (returnCode != 0) {
+                //return empty Completion
+                return { };
+            } else {
+                data = (ioData *)(cqe->user_data);
+                return completion;
+            }
+        }
+
+    private:
+        io_uring* ring;
+        ioData* data{};
+        io_uring_cqe* cqe;
+    };
+
     class Ring {
     public:
 
@@ -21,8 +73,12 @@ namespace FileFixer {
          * @param entries sets the SQ and CQ queue depth.
          * @param flags Multiple flags can be set with | (pipe) separator.
          */
-        constexpr explicit Ring(unsigned entries , unsigned flags = 0) {
-            io_uring_queue_init(entries, &ring, flags);
+        explicit Ring(unsigned entries , size_t blockSize = 1024, unsigned flags = 0) {
+            int started { io_uring_queue_init(entries, &ring, flags) };
+
+            if (started < 0) {
+                throw std::runtime_error(fmt::format("Ring failed to start. Error: {}\n", strerror(-started)));
+            }
         }
 
         //Disable all copying or moving
@@ -35,7 +91,7 @@ namespace FileFixer {
 
         // ============ Ring Operations ============ //
 
-        // Print list of io_uring operations supported by users system kernel version.
+        // Print list of io_uring operations supported by the kernel.
         void Probe() {
             std::vector<std::string> uringOps { "IORING_OP_NOP",
                                                 "IORING_OP_READV",
@@ -87,9 +143,58 @@ namespace FileFixer {
             free(probe);
         }
 
+        io_uring* Get() { return &ring; }
 
+        static void PrepQueue(io_uring_sqe* sqe, ioData *data, int fd, size_t size, size_t offset) {
+            if (data->type == ioType::write) {
+                prepWriteData(fd, data);
+
+                io_uring_prep_writev(sqe, fd, &data->iov, 1, offset);
+            } else {
+                prepReadData(fd, size, offset, data);
+
+                io_uring_prep_readv(sqe, fd, &data->iov, 1, offset);
+            }
+
+            io_uring_sqe_set_data(sqe, data);
+        }
+
+        void Submit() {
+            int submitted { io_uring_submit(&ring) };
+
+            if (submitted < 0) {
+                throw std::runtime_error(fmt::format("Failed to submit to ring. Error: {}\n", strerror(-submitted)));
+            }
+        }
+
+        void AddFD(int fd) {
+            fds.emplace_back(fd);
+        }
+
+        io_uring* Expose() {
+            return &ring;
+        }
 
     private:
         io_uring ring{};
+        std::vector<int> fds{};
+        static void prepReadData(int fd, size_t size, size_t offset, ioData* data) {
+            data->fd = fd;
+            data->type = ioType::read;
+            data->startingOffset = offset;
+            data->currentOffset  = offset;
+            data->iov.iov_base   = data + 1;
+            data->iov.iov_len    = size;
+            data->firstLength    = size;
+        }
+
+        static void prepWriteData(int fd, ioData *data) {
+            data->fd = fd;
+            data->type = ioType::write;
+            data->currentOffset = data->startingOffset;
+            data->iov.iov_base = data + 1;
+            data->iov.iov_len = data->firstLength;
+        }
+
     };
 }

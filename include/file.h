@@ -5,29 +5,36 @@
 #pragma once
 
 #include <filesystem>
+#include <fcntl.h> //open
+#include <csignal> //close
 #include <vector>
 
 namespace FileFixer {
     class File {
-        explicit File(std::filesystem::path filePath);
+    public:
+        std::filesystem::path path;
+        int fd{};
+        size_t size{};
+
+        explicit File(std::filesystem::path filePath): path(std::move(filePath)) {
+            fd = open(path.c_str(), O_RDONLY, O_LARGEFILE, O_NOATIME, O_NONBLOCK);
+
+            if (fd < 0) {
+                throw std::runtime_error("Can not open source file.");
+            }
+
+            size = file_size(path);
+
+        }
 
         //Move constructor
-        File(File &&other) noexcept ;
+        File(File &&other) noexcept : path(std::move(other.path)), size(other.size) { }
 
-        [[nodiscard]]
-        int fd() const;
-
-        [[nodiscard]]
-        size_t size() const;
-
-        [[nodiscard]]
-        const std::filesystem::path& path() const;
-
-        ~File();
-    private:
-        std::filesystem::path path_;
-        int fd_{};
-        size_t size_{};
-
+        ~File() {
+            if (fd) {
+                close(fd);
+            }
+        }
     };
 }
+
