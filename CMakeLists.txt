@@ -11,4 +11,4 @@ add_executable(fileFixer
         include/file.h
         include/ring.h
         )
-target_link_libraries(fileFixer fmt)
+target_link_libraries(fileFixer fmt /usr/lib/liburing.so)

@@ -9,25 +9,27 @@
 #include <iostream>
 #include <unistd.h>
 #include <map>
+#include <utility>
 #include <vector>
 #include <xxh3.h>
 #include <set>
 #include <fstream>
+#include <algorithm>
 #include "ring.h"
 #include "file.h"
 
 namespace FileFixer {
     class Worker{
     public:
-        explicit Worker(FileFixer::Ring* ring) : ring(ring) { };
+        explicit Worker() = default;
 
         /**
          * Manage input until an existing directory is given and change CWD to it.
          */
-        void InputPathHandler() {
-            fmt::print("Enter Directory path: ");
-            std::cin >> inputPath;
-
+        void InputPathHandler(std::filesystem::path& path) {
+//            fmt::print("Enter Directory path: ");
+//            std::cin >> inputPath;
+            inputPath = path;
             //Fix home shorthand
             if (inputPath.string().front() == '~') {
                 prependHomeDir(inputPath);
@@ -68,7 +70,7 @@ namespace FileFixer {
          * duplicate file sizes and hash to reduce files further.
          * @return a set with unique file paths.
          */
-        void ProcessFiles() {
+        void ProcessFiles(FileFixer::Ring* fxRing) {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(inputPath)) {
                 if (entry.is_regular_file()) {
                     //Open file
@@ -83,16 +85,18 @@ namespace FileFixer {
             for (auto& [size, fileInfo] : files) {
                 //Check for duplicate file size. No need to return the value. If needed, use find() instead.
                 if (files.count(size)) {
-                    auto hash {hashFile(size, fileInfo.first) };
-
-                    hashes.emplace(hash, fileInfo.second);
+                    bufferAndPath.emplace_back(fileBuffer(size, fileInfo.first, fxRing), fileInfo.second);
                 } else {
-                    // If file size is unique save to set.
+                    // If file size is unique save path to set.
                     uniqueFiles.emplace(fileInfo.second);
                 }
             }
         }
+        //TODO: add hash function here.
 
+        for (auto& [buffer, path] : bufferAndPath) {
+            hashes.emplace(hashFile(buffer, buffer.size()), path);
+        }
         //Hashes should be unique so add them to set.
         for (const auto& hash: hashes) {
             uniqueFiles.emplace(hash.second);
@@ -104,9 +108,9 @@ namespace FileFixer {
         }
 
     private:
-        FileFixer::Ring* ring;
         std::filesystem::path inputPath {};
         std::multimap<size_t, std::pair<int, std::filesystem::path>> files {};
+        std::vector<std::pair<std::vector<char>, std::filesystem::path>> bufferAndPath;
         std::set<std::filesystem::path> uniqueFiles{};
         std::map<XXH64_hash_t, std::filesystem::path > hashes{};
 
@@ -119,40 +123,103 @@ namespace FileFixer {
             inputPath = stringPath;
         }
 
-        static XXH64_hash_t hashFile(unsigned long fileSize, const int fd) {
-            auto seed{0};
-            auto buffer{fileToBuffer(fileSize, fd)};
-
-            return XXH64(buffer.data(), fileSize, seed);
-        }
-
-       static std::vector<char> fileToBuffer(unsigned long fileSize, const int fd) {
-            auto bytesRead {0};
-            auto bytesWritten {0};
-            auto bytesRemaining {fileSize};
+       static std::vector<char> fileBuffer(unsigned long fileSize, const int fd, FileFixer::Ring* ring) {
             unsigned long blockSize {1024};
-            auto offset {0};
+            unsigned long bytesRead {0};
+            unsigned long bytesWritten {0};
+            unsigned long bytesRemaining {fileSize};
+            unsigned long thisOffset {0};
 
-            while (bytesRead < fileSize || bytesWritten < fileSize) {
-                //que up reads
-                while (bytesRead < bytesRemaining) {
+            std::vector<char> buffer;
+            buffer.reserve(fileSize);
+
+            //Create a vector of ioData the size of the SQ ring.
+            std::vector<std::unique_ptr<ioData>> dataVec;
+            dataVec.reserve(ring->Expose()->sq.ring_entries);
+
+            std::generate_n(std::back_inserter(dataVec),
+                            ring->Expose()->sq.ring_entries,
+                            [ ] { return FileFixer::Ring::GetIOData(); });
+
+            //Read until finished.
+            while (bytesRead < fileSize) {
+                //Queue up as many reads as possible.
+                while (bytesRemaining) {
                     if (bytesRemaining > blockSize) {
                         blockSize = blockSize;
                     } else {
                         blockSize = bytesRemaining;
                     }
 
-                    auto data { FileFixer::Ring::GetIOData() };
                     auto sqe { FileFixer::Ring::GetSQE() };
 
+                    //SQ is full.
                     if (sqe == nullptr) {
-                        FileFixer::Ring::Submit();
+                        ring->Submit();
                         break;
                     }
 
-                    FileFixer::Ring::PrepQueue(sqe.get(), data.get(), fd, blockSize, offset);
+                    //TODO:: Get an ioData from dataVec.
+                    FileFixer::Ring::PrepQueue(sqe.get(), data.get(), blockSize);
+
+                    if (data.get()->type == ioType::read) {
+                        bytesRead += blockSize;
+                        thisOffset += blockSize;
+                        bytesRemaining -= blockSize;
+                    }
+                }
+
+                //Find at least one completion.
+                while (bytesRead <= fileSize) {
+                    auto completion = Completion(ring->Expose()).Peek();
+                    auto sqe { FileFixer::Ring::GetSQE() };
+
+                    //SQ is full.
+                    if (sqe == nullptr) {
+                        ring->Submit();
+                        break;
+                    }
+
+                    if (completion.has_value()) {
+                        if (completion->cqe->res == -EAGAIN) {
+                            //Try again
+                            FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
+                        }
+                    } else if (completion->cqe->res != completion->data->iov.iov_len) {
+                        //Short read/write. Adjust and requeue.
+                        completion->data->iov.iov_base =
+                                (void*)((char*)completion->data->iov.iov_base + completion->cqe->res);
+                        completion->data->iov.iov_len -= completion->cqe->res;
+
+                        FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
+                    }
+
+                    //Bytes have been read. Store in buffer
+                    if (completion->data->type == ioType::read) {
+                        std::copy((char*)completion->data->iov.iov_base,
+                                  (char*)completion->data->iov.iov_base + completion->data->iov.iov_len,
+                                  std::back_inserter(buffer));
+                    }
+
+                    completion->Processed();
+                    bytesWritten += completion->data->firstLength;
                 }
             }
+
+           return buffer;
+        }
+
+        static XXH64_hash_t hashFile(std::vector<char>& buffer, unsigned long fileSize) {
+            return XXH64(buffer.data(), fileSize, 0);
         }
     };
 }
+
+
+
+
+
+
+
+
+

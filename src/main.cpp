@@ -15,9 +15,10 @@ int main() {
     printTitle();
     FileFixer::Ring ring(4096);
 
-    FileFixer::Worker worker(&ring);
-    worker.InputPathHandler();
-    worker.ProcessFiles();
+    FileFixer::Worker worker;
+    auto path { std::filesystem::path("~/test") };
+    worker.InputPathHandler(path);
+    worker.ProcessFiles(&ring);
     worker.PrintContainerCount();
 
 
