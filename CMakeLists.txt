@@ -3,10 +3,7 @@ project(fileFixer)
 
 set(CMAKE_CXX_STANDARD 23)
 
-include_directories(
-        include/path
-        extern/liburing/src/include
-        )
+include_directories(include)
 
 add_executable(fileFixer
         src/main.cpp

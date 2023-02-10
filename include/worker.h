@@ -70,30 +70,30 @@ namespace FileFixer {
          */
         void ProcessFiles() {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(inputPath)) {
-            if (!entry.is_directory()) {
-                FileFixer::File file(entry.path());
-                ring->AddFD(file.fd);
-                //TODO:: continue implementing registered files and buffers. Use Expose function to access ring.
-                files.emplace(file.size, file.path);
-            } else {
-                continue;
+                if (entry.is_regular_file()) {
+                    //Open file
+                    FileFixer::File file(entry.path());
+                    files.emplace(file.size, std::make_pair(file.fd, file.path));
+                } else {
+                    continue;
+                }
             }
-        }
 
         if (!files.empty()) {
-            for (auto& [size, path] : files) {
+            for (auto& [size, fileInfo] : files) {
                 //Check for duplicate file size. No need to return the value. If needed, use find() instead.
                 if (files.count(size)) {
-                    auto hash {hashFile(size, path)};
-                    hashes.emplace(hash, path);
+                    auto hash {hashFile(size, fileInfo.first) };
+
+                    hashes.emplace(hash, fileInfo.second);
                 } else {
                     // If file size is unique save to set.
-                    uniqueFiles.emplace(path);
+                    uniqueFiles.emplace(fileInfo.second);
                 }
             }
         }
 
-        //Hashes should be unique so add them to
+        //Hashes should be unique so add them to set.
         for (const auto& hash: hashes) {
             uniqueFiles.emplace(hash.second);
         }
@@ -106,7 +106,7 @@ namespace FileFixer {
     private:
         FileFixer::Ring* ring;
         std::filesystem::path inputPath {};
-        std::multimap<size_t, std::filesystem::path > files {};
+        std::multimap<size_t, std::pair<int, std::filesystem::path>> files {};
         std::set<std::filesystem::path> uniqueFiles{};
         std::map<XXH64_hash_t, std::filesystem::path > hashes{};
 
@@ -119,20 +119,40 @@ namespace FileFixer {
             inputPath = stringPath;
         }
 
-        static XXH64_hash_t hashFile(unsigned long fileSize, const std::filesystem::path& path) {
-            //Prepare variables for hash function
-            auto size{fileSize};
+        static XXH64_hash_t hashFile(unsigned long fileSize, const int fd) {
             auto seed{0};
-            auto buffer{fileToBuffer(path)};
+            auto buffer{fileToBuffer(fileSize, fd)};
 
-            return XXH64(buffer.data(), size, seed);
+            return XXH64(buffer.data(), fileSize, seed);
         }
 
-        static std::vector<char> fileToBuffer(const std::filesystem::path& path) {
+       static std::vector<char> fileToBuffer(unsigned long fileSize, const int fd) {
+            auto bytesRead {0};
+            auto bytesWritten {0};
+            auto bytesRemaining {fileSize};
+            unsigned long blockSize {1024};
+            auto offset {0};
 
-            std::ifstream source(path, std::ios::in | std::ios::binary);
-                std::vector<char> buffer((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
-                return buffer;
+            while (bytesRead < fileSize || bytesWritten < fileSize) {
+                //que up reads
+                while (bytesRead < bytesRemaining) {
+                    if (bytesRemaining > blockSize) {
+                        blockSize = blockSize;
+                    } else {
+                        blockSize = bytesRemaining;
+                    }
+
+                    auto data { FileFixer::Ring::GetIOData() };
+                    auto sqe { FileFixer::Ring::GetSQE() };
+
+                    if (sqe == nullptr) {
+                        FileFixer::Ring::Submit();
+                        break;
+                    }
+
+                    FileFixer::Ring::PrepQueue(sqe.get(), data.get(), fd, blockSize, offset);
+                }
+            }
         }
     };
 }

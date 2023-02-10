@@ -27,9 +27,6 @@ namespace FileFixer {
 
         }
 
-        //Move constructor
-        File(File &&other) noexcept : path(std::move(other.path)), size(other.size) { }
-
         ~File() {
             if (fd) {
                 close(fd);

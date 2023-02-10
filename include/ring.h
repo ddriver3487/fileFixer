@@ -73,7 +73,7 @@ namespace FileFixer {
          * @param entries sets the SQ and CQ queue depth.
          * @param flags Multiple flags can be set with | (pipe) separator.
          */
-        explicit Ring(unsigned entries , size_t blockSize = 1024, unsigned flags = 0) {
+        explicit Ring(unsigned entries, unsigned flags = 0) {
             int started { io_uring_queue_init(entries, &ring, flags) };
 
             if (started < 0) {
@@ -143,8 +143,6 @@ namespace FileFixer {
             free(probe);
         }
 
-        io_uring* Get() { return &ring; }
-
         static void PrepQueue(io_uring_sqe* sqe, ioData *data, int fd, size_t size, size_t offset) {
             if (data->type == ioType::write) {
                 prepWriteData(fd, data);
@@ -159,7 +157,7 @@ namespace FileFixer {
             io_uring_sqe_set_data(sqe, data);
         }
 
-        void Submit() {
+        static void Submit() {
             int submitted { io_uring_submit(&ring) };
 
             if (submitted < 0) {
@@ -167,16 +165,18 @@ namespace FileFixer {
             }
         }
 
-        void AddFD(int fd) {
-            fds.emplace_back(fd);
+        static auto GetIOData() {
+            return std::make_unique_for_overwrite<ioData>();
+
         }
 
-        io_uring* Expose() {
-            return &ring;
+        static std::unique_ptr<io_uring_sqe> GetSQE() {
+            return std::make_unique_for_overwrite<io_uring_sqe>();
+
         }
 
     private:
-        io_uring ring{};
+        static io_uring ring;
         std::vector<int> fds{};
         static void prepReadData(int fd, size_t size, size_t offset, ioData* data) {
             data->fd = fd;
