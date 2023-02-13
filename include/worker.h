@@ -85,7 +85,7 @@ namespace FileFixer {
             for (auto& [size, fileInfo] : files) {
                 //Check for duplicate file size. No need to return the value. If needed, use find() instead.
                 if (files.count(size)) {
-                    bufferAndPath.emplace_back(fileBuffer(size, fileInfo.first, fxRing), fileInfo.second);
+                    bufferAndPath.emplace_back(fileBuffer(size, fxRing), fileInfo.second);
                 } else {
                     // If file size is unique save path to set.
                     uniqueFiles.emplace(fileInfo.second);
@@ -123,7 +123,7 @@ namespace FileFixer {
             inputPath = stringPath;
         }
 
-       static std::vector<char> fileBuffer(unsigned long fileSize, const int fd, FileFixer::Ring* ring) {
+       static std::vector<char> fileBuffer(unsigned long fileSize, FileFixer::Ring* ring) {
             unsigned long blockSize {1024};
             unsigned long bytesRead {0};
             unsigned long bytesWritten {0};
@@ -146,12 +146,10 @@ namespace FileFixer {
                     auto sqe { FileFixer::Ring::GetSQE() };
 
                     //SQ is full.
-                    if (sqe == nullptr) {
-                        ring->Submit();
+                    if (sqe.get() == nullptr) {
                         break;
                     }
 
-                    //TODO:: Get an ioData from dataPool.
                     auto data { ring->GetIoData()};
 
                     FileFixer::Ring::PrepQueue(sqe.get(), data.get(), blockSize);
@@ -163,14 +161,15 @@ namespace FileFixer {
                     }
                 }
 
+                ring->Submit();
+
                 //Find at least one completion.
                 while (bytesRead <= fileSize) {
                     auto completion = Completion(ring->Expose()).Peek();
                     auto sqe { FileFixer::Ring::GetSQE() };
 
                     //SQ is full.
-                    if (sqe == nullptr) {
-                        ring->Submit();
+                    if (sqe.get() == nullptr) {
                         break;
                     }
 
@@ -181,8 +180,7 @@ namespace FileFixer {
                         }
                     } else if (completion->cqe->res != completion->data->iov.iov_len) {
                         //Short read/write. Adjust and requeue.
-                        completion->data->iov.iov_base =
-                                (void*)((char*)completion->data->iov.iov_base + completion->cqe->res);
+                        completion->data->iov.iov_base = completion->data->buffer.data() + completion->cqe->res;
                         completion->data->iov.iov_len -= completion->cqe->res;
 
                         FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
@@ -198,6 +196,8 @@ namespace FileFixer {
                     completion->Processed();
                     bytesWritten += completion->data->firstLength;
                 }
+
+                ring->Submit();
             }
 
            return buffer;

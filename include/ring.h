@@ -28,6 +28,7 @@ namespace FileFixer {
         size_t offset       { };
         size_t firstLength  { };
         iovec  iov          { };
+        std::vector<char> buffer {};
     };
 
     class Completion {
@@ -145,18 +146,18 @@ namespace FileFixer {
             free(probe);
         }
 
-        static void PrepQueue(io_uring_sqe* sqe, ioData *data, size_t size) {
+        static void PrepQueue(io_uring_sqe* entry, ioData *data, size_t size) {
             if (data->type == ioType::write) {
                 prepWriteData(data->fd, data);
 
-                io_uring_prep_writev(sqe, data->fd, &data->iov, 1, data->offset);
+                io_uring_prep_writev(entry, data->fd, &data->iov, 1, data->offset);
             } else {
                 prepReadData(data->fd, size, data->offset, data);
 
-                io_uring_prep_readv(sqe, data->fd, &data->iov, 1, data->offset);
+                io_uring_prep_readv(entry, data->fd, &data->iov, 1, data->offset);
             }
 
-            io_uring_sqe_set_data(sqe, data);
+            io_uring_sqe_set_data(entry, data);
         }
 
         void Submit() {
@@ -168,19 +169,20 @@ namespace FileFixer {
         }
 
         std::unique_ptr<ioData> GetIoData() {
-            auto free = std::ranges::any_of(
+            auto free = std::ranges::find_if(
                     dataPool, [] (const auto& data) {
                         return data->free;
                     } );
+            if (free != dataPool.end()) {
+                free->get()->free = false;
+                return std::move(*free);
+            } else {
 
-            if (free) {
-                dataPool[free]->free = false;
-                return std::move(dataPool[free]);
             }
         }
 
 
-        static auto GetSQE() { return std::make_unique_for_overwrite<io_uring_sqe>(); }
+        static auto GetSQE() { return std::make_unique<io_uring_sqe>(); }
 
         auto Expose()        { return &ring; }
 
@@ -193,7 +195,7 @@ namespace FileFixer {
             data->type          = ioType::read;
             data->firstOffset   = offset;
             data->offset        = offset;
-            data->iov.iov_base  = data + 1;
+            data->iov.iov_base  = data->buffer.data();
             data->iov.iov_len   = size;
             data->firstLength   = size;
         }
@@ -202,7 +204,7 @@ namespace FileFixer {
             data->fd            = fd;
             data->type          = ioType::write;
             data->offset        = data->firstOffset;
-            data->iov.iov_base  = data + 1;
+            data->iov.iov_base  = data->buffer.data();
             data->iov.iov_len   = data->firstLength;
         }
 
