@@ -133,14 +133,6 @@ namespace FileFixer {
             std::vector<char> buffer;
             buffer.reserve(fileSize);
 
-            //Create a vector of ioData the size of the SQ ring.
-            std::vector<std::unique_ptr<ioData>> dataVec;
-            dataVec.reserve(ring->Expose()->sq.ring_entries);
-
-            std::generate_n(std::back_inserter(dataVec),
-                            ring->Expose()->sq.ring_entries,
-                            [ ] { return FileFixer::Ring::GetIOData(); });
-
             //Read until finished.
             while (bytesRead < fileSize) {
                 //Queue up as many reads as possible.
@@ -159,10 +151,12 @@ namespace FileFixer {
                         break;
                     }
 
-                    //TODO:: Get an ioData from dataVec.
+                    //TODO:: Get an ioData from dataPool.
+                    auto data { ring->GetIoData()};
+
                     FileFixer::Ring::PrepQueue(sqe.get(), data.get(), blockSize);
 
-                    if (data.get()->type == ioType::read) {
+                    if (data->type == ioType::read) {
                         bytesRead += blockSize;
                         thisOffset += blockSize;
                         bytesRemaining -= blockSize;

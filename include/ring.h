@@ -21,12 +21,13 @@ namespace FileFixer {
     };
 
     struct ioData {
-        int fd { };
-        ioType type { ioType::none };
-        size_t firstOffset { };
-        size_t offset      { };
-        size_t firstLength { };
-        iovec  iov         { };
+        int fd              { };
+        bool free           { true };
+        ioType type         { ioType::none };
+        size_t firstOffset  { };
+        size_t offset       { };
+        size_t firstLength  { };
+        iovec  iov          { };
     };
 
     class Completion {
@@ -77,6 +78,8 @@ namespace FileFixer {
             if (started < 0) {
                 throw std::runtime_error(fmt::format("Ring failed to start. Error: {}\n", strerror(-started)));
             }
+
+            fillIoData();
         }
 
         //Disable all copying or moving
@@ -164,14 +167,26 @@ namespace FileFixer {
             }
         }
 
-        static auto GetIOData() { return std::make_unique_for_overwrite<ioData>(); }
+        std::unique_ptr<ioData> GetIoData() {
+            auto free = std::ranges::any_of(
+                    dataPool, [] (const auto& data) {
+                        return data->free;
+                    } );
 
-        static auto GetSQE()    { return std::make_unique_for_overwrite<io_uring_sqe>(); }
+            if (free) {
+                dataPool[free]->free = false;
+                return std::move(dataPool[free]);
+            }
+        }
 
-        auto Expose()           { return &ring; }
+
+        static auto GetSQE() { return std::make_unique_for_overwrite<io_uring_sqe>(); }
+
+        auto Expose()        { return &ring; }
 
     private:
         io_uring ring{};
+        std::vector<std::unique_ptr<ioData>> dataPool;
 
         static void prepReadData(int fd, size_t size, size_t offset, ioData* data) {
             data->fd            = fd;
@@ -191,5 +206,14 @@ namespace FileFixer {
             data->iov.iov_len   = data->firstLength;
         }
 
+        /**
+         * fill ioData pool by n sq entries.
+         */
+        void fillIoData() {
+            dataPool.reserve(ring.sq.ring_entries);
+            std::generate_n(std::back_inserter(dataPool),
+                            ring.sq.ring_entries,
+                            [ ] { return std::make_unique_for_overwrite<ioData>(); });
+        }
     };
 }
