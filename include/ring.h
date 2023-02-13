@@ -168,16 +168,16 @@ namespace FileFixer {
             }
         }
 
-        std::unique_ptr<ioData> GetIoData() {
-            auto free = std::ranges::find_if(
+        std::optional<std::unique_ptr<ioData>> GetIoData() {
+            auto foundIOData = std::ranges::find_if(
                     dataPool, [] (const auto& data) {
                         return data->free;
                     } );
-            if (free != dataPool.end()) {
-                free->get()->free = false;
-                return std::move(*free);
+            if (foundIOData != dataPool.end()) {
+                foundIOData->get()->free = false;
+                return std::move(*foundIOData);
             } else {
-
+                return { };
             }
         }
 
@@ -213,9 +213,10 @@ namespace FileFixer {
          */
         void fillIoData() {
             dataPool.reserve(ring.sq.ring_entries);
-            std::generate_n(std::back_inserter(dataPool),
-                            ring.sq.ring_entries,
-                            [ ] { return std::make_unique_for_overwrite<ioData>(); });
+            std::generate_n(std::back_inserter(dataPool), ring.sq.ring_entries,
+                            [ ] { auto data { std::make_unique_for_overwrite<ioData>()};
+                                  data->buffer.reserve(1024);
+                                  return data;});
         }
     };
 }

@@ -150,15 +150,20 @@ namespace FileFixer {
                         break;
                     }
 
-                    auto data { ring->GetIoData()};
+                    auto data { ring->GetIoData() };
 
-                    FileFixer::Ring::PrepQueue(sqe.get(), data.get(), blockSize);
+                    if (data.has_value()) {
+                        FileFixer::Ring::PrepQueue(sqe.get(), data->get(), blockSize);
 
-                    if (data->type == ioType::read) {
-                        bytesRead += blockSize;
-                        thisOffset += blockSize;
-                        bytesRemaining -= blockSize;
+                        if (data->get()->type == ioType::read) {
+                            bytesRead += blockSize;
+                            thisOffset += blockSize;
+                            bytesRemaining -= blockSize;
+                        }
+                    } else {
+                        continue;
                     }
+
                 }
 
                 ring->Submit();
@@ -166,7 +171,7 @@ namespace FileFixer {
                 //Find at least one completion.
                 while (bytesRead <= fileSize) {
                     auto completion = Completion(ring->Expose()).Peek();
-                    auto sqe { FileFixer::Ring::GetSQE() };
+                    auto sqe{FileFixer::Ring::GetSQE()};
 
                     //SQ is full.
                     if (sqe.get() == nullptr) {
@@ -177,24 +182,24 @@ namespace FileFixer {
                         if (completion->cqe->res == -EAGAIN) {
                             //Try again
                             FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
+                        } else if (completion->cqe->res != completion->data->iov.iov_len) {
+                            //Short read/write. Adjust and requeue.
+                            completion->data->iov.iov_base = completion->data->buffer.data() + completion->cqe->res;
+                            completion->data->iov.iov_len -= completion->cqe->res;
+
+                            FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
                         }
-                    } else if (completion->cqe->res != completion->data->iov.iov_len) {
-                        //Short read/write. Adjust and requeue.
-                        completion->data->iov.iov_base = completion->data->buffer.data() + completion->cqe->res;
-                        completion->data->iov.iov_len -= completion->cqe->res;
+                        //Bytes have been read. Store in buffer
+                        if (completion->data->type == ioType::read) {
+                            std::copy((char *) completion->data->iov.iov_base,
+                                      (char *) completion->data->iov.iov_base + completion->data->iov.iov_len,
+                                      std::back_inserter(buffer));
+                        }
 
-                        FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
+                        completion->Processed();
+                        completion->data->free = true;
+                        bytesWritten += completion->data->firstLength;
                     }
-
-                    //Bytes have been read. Store in buffer
-                    if (completion->data->type == ioType::read) {
-                        std::copy((char*)completion->data->iov.iov_base,
-                                  (char*)completion->data->iov.iov_base + completion->data->iov.iov_len,
-                                  std::back_inserter(buffer));
-                    }
-
-                    completion->Processed();
-                    bytesWritten += completion->data->firstLength;
                 }
 
                 ring->Submit();
