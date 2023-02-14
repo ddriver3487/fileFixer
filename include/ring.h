@@ -51,9 +51,9 @@ namespace FileFixer {
 
             if (returnCode != 0) {
                 //return empty Completion
+                fmt::print("Completion Error: {}\n", strerror(returnCode));
                 return { };
             } else {
-
                 data = (ioData *)(io_uring_cqe_get_data(cqe));
                 return completion;
             }
@@ -168,14 +168,14 @@ namespace FileFixer {
             }
         }
 
-        std::optional<std::unique_ptr<ioData>> GetIoData() {
+        std::optional<ioData*> GetIoData() {
             auto foundIOData = std::ranges::find_if(
-                    dataPool, [] (const auto& data) {
+                    dataPool, [&] (const auto& data) {
                         return data->free;
                     } );
             if (foundIOData != dataPool.end()) {
                 foundIOData->get()->free = false;
-                return std::move(*foundIOData);
+                return foundIOData->get();
             } else {
                 return { };
             }

@@ -151,11 +151,11 @@ namespace FileFixer {
                     }
 
                     auto data { ring->GetIoData() };
-
+                    //TODO:Check fd in prepQueue
                     if (data.has_value()) {
-                        FileFixer::Ring::PrepQueue(sqe.get(), data->get(), blockSize);
+                        FileFixer::Ring::PrepQueue(sqe.get(), data.value(), blockSize);
 
-                        if (data->get()->type == ioType::read) {
+                        if (data.value()->type == ioType::read) {
                             bytesRead += blockSize;
                             thisOffset += blockSize;
                             bytesRemaining -= blockSize;
