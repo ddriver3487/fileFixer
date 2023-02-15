@@ -75,7 +75,7 @@ namespace FileFixer {
                 if (entry.is_regular_file()) {
                     //Open file
                     FileFixer::File file(entry.path());
-                    files.emplace(file.size, std::make_pair(file.fd, file.path));
+                    files.emplace(file.size, std::make_pair(file.fd, entry.path()));
                 } else {
                     continue;
                 }
@@ -85,7 +85,7 @@ namespace FileFixer {
             for (auto& [size, fileInfo] : files) {
                 //Check for duplicate file size. No need to return the value. If needed, use find() instead.
                 if (files.count(size)) {
-                    bufferAndPath.emplace_back(fileBuffer(size, fxRing), fileInfo.second);
+                    bufferAndPath.emplace_back(fileBuffer(fileInfo.first, size, fxRing), fileInfo.second);
                 } else {
                     // If file size is unique save path to set.
                     uniqueFiles.emplace(fileInfo.second);
@@ -123,7 +123,7 @@ namespace FileFixer {
             inputPath = stringPath;
         }
 
-       static std::vector<char> fileBuffer(unsigned long fileSize, FileFixer::Ring* ring) {
+       static std::vector<char> fileBuffer(int fd, unsigned long fileSize, FileFixer::Ring* ring) {
             unsigned long blockSize {1024};
             unsigned long bytesRead {0};
             unsigned long bytesWritten {0};
@@ -150,10 +150,10 @@ namespace FileFixer {
                         break;
                     }
 
-                    auto data { ring->GetIoData() };
-                    //TODO:Check fd in prepQueue
+                    auto data { ring->GetIoData () };
+
                     if (data.has_value()) {
-                        FileFixer::Ring::PrepQueue(sqe.get(), data.value(), blockSize);
+                        FileFixer::Ring::PrepQueue(fd, sqe.get(), data.value(), blockSize);
 
                         if (data.value()->type == ioType::read) {
                             bytesRead += blockSize;
@@ -170,7 +170,9 @@ namespace FileFixer {
 
                 //Find at least one completion.
                 while (bytesRead <= fileSize) {
-                    auto completion = Completion(ring->Expose()).Peek();
+
+                    io_uring_cqe* cqe;
+                    auto completion = Completion(ring->Expose(), cqe).Peek();
                     auto sqe{FileFixer::Ring::GetSQE()};
 
                     //SQ is full.
@@ -181,13 +183,13 @@ namespace FileFixer {
                     if (completion.has_value()) {
                         if (completion->cqe->res == -EAGAIN) {
                             //Try again
-                            FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
+                            FileFixer::Ring::PrepQueue(fd, sqe.get(), completion->data, blockSize);
                         } else if (completion->cqe->res != completion->data->iov.iov_len) {
                             //Short read/write. Adjust and requeue.
                             completion->data->iov.iov_base = completion->data->buffer.data() + completion->cqe->res;
                             completion->data->iov.iov_len -= completion->cqe->res;
 
-                            FileFixer::Ring::PrepQueue(sqe.get(), completion->data, blockSize);
+                            FileFixer::Ring::PrepQueue(fd, sqe.get(), completion->data, blockSize);
                         }
                         //Bytes have been read. Store in buffer
                         if (completion->data->type == ioType::read) {

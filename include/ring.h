@@ -28,7 +28,7 @@ namespace FileFixer {
         size_t offset       { };
         size_t firstLength  { };
         iovec  iov          { };
-        std::vector<char> buffer {};
+        std::vector<char> buffer = std::vector<char>(1024, 0);
     };
 
     class Completion {
@@ -36,7 +36,7 @@ namespace FileFixer {
         io_uring_cqe* cqe{};
         ioData* data{};
 
-        explicit Completion(io_uring* ring) : ring(ring) { };
+        explicit Completion(io_uring* ring, io_uring_cqe* cqe) : ring(ring), cqe(cqe) { };
         Completion() : ring(nullptr), data(nullptr), cqe(nullptr) { };
 
         void Processed() {
@@ -46,7 +46,7 @@ namespace FileFixer {
 
         // Return an IO completion, if one is readily available. Returns with a cqe_ptr filled in on success.
         std::optional<Completion> Peek() {
-            Completion completion;
+            Completion completion(ring,cqe);
             int returnCode = io_uring_peek_cqe(ring, &completion.cqe);
 
             if (returnCode != 0) {
@@ -54,7 +54,7 @@ namespace FileFixer {
                 fmt::print("Completion Error: {}\n", strerror(returnCode));
                 return { };
             } else {
-                data = (ioData *)(io_uring_cqe_get_data(cqe));
+                data = (ioData *)(io_uring_cqe_get_data(completion.cqe));
                 return completion;
             }
         }
@@ -146,15 +146,15 @@ namespace FileFixer {
             free(probe);
         }
 
-        static void PrepQueue(io_uring_sqe* entry, ioData *data, size_t size) {
+        static void PrepQueue(int fd, io_uring_sqe* entry, ioData *data, size_t size) {
             if (data->type == ioType::write) {
-                prepWriteData(data->fd, data);
+                prepWriteData(fd, data);
 
-                io_uring_prep_writev(entry, data->fd, &data->iov, 1, data->offset);
+                io_uring_prep_writev(entry, fd, &data->iov, 1, data->offset);
             } else {
-                prepReadData(data->fd, size, data->offset, data);
+                prepReadData(fd, size, data->offset, data);
 
-                io_uring_prep_readv(entry, data->fd, &data->iov, 1, data->offset);
+                io_uring_prep_readv(entry, fd, &data->iov, 1, data->offset);
             }
 
             io_uring_sqe_set_data(entry, data);
@@ -213,10 +213,9 @@ namespace FileFixer {
          */
         void fillIoData() {
             dataPool.reserve(ring.sq.ring_entries);
-            std::generate_n(std::back_inserter(dataPool), ring.sq.ring_entries,
-                            [ ] { auto data { std::make_unique_for_overwrite<ioData>()};
-                                  data->buffer.reserve(1024);
-                                  return data;});
+            std::generate_n(std::back_inserter(dataPool), ring.sq.ring_entries, [] {
+                return std::make_unique_for_overwrite<ioData>();
+            });
         }
     };
 }
